@@ -114,7 +114,7 @@ void DXProceduralProject::CreateAABBPrimitiveAttributesBuffers()
 	auto device = m_deviceResources->GetD3DDevice();
 	auto num_ob = m_aabbs.size();
 
-	m_aabbPrimitiveAttributeBuffer.Create(device, num_ob, L"Scene Constant Buffer");
+	m_aabbPrimitiveAttributeBuffer.Create(device, num_ob, 1, L"Scene Constant Buffer");
 }
 
 // LOOKAT-2.1: Update camera matrices stored in m_sceneCB.
