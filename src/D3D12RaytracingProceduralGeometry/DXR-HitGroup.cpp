@@ -29,15 +29,15 @@ void DXProceduralProject::CreateHitGroupSubobjects(CD3D12_STATE_OBJECT_DESC* ray
 
 	// TODO-2.3: AABB geometry hit groups. Very similar to triangles, except now you have to *also* loop over the primitive types.
 	{
-		for (UINT rayType = 0; rayType < RayType::Count; rayType++) {
-			for (UINT primType = 0; primType < IntersectionShaderType::Count; primType++) {
+		for (UINT i = 0; i < RayType::Count; i++) {
+			for (UINT j = 0; j < IntersectionShaderType::Count; j++) {
 				auto hitGroup = raytracingPipeline->CreateSubobject<CD3D12_HIT_GROUP_SUBOBJECT>();
-				if (rayType == RayType::Radiance) {
+				if (i == RayType::Radiance) {
 					hitGroup->SetClosestHitShaderImport(c_closestHitShaderNames[GeometryType::AABB]);
 				}
-				hitGroup->SetIntersectionShaderImport(c_intersectionShaderNames[primType]);
+				hitGroup->SetIntersectionShaderImport(c_intersectionShaderNames[j]);
 				// We tell the hitgroup that it should export into the correct shader hit group name, with the correct type
-				hitGroup->SetHitGroupExport(c_hitGroupNames_AABBGeometry[primType][rayType]);
+				hitGroup->SetHitGroupExport(c_hitGroupNames_AABBGeometry[i][j]);
 				hitGroup->SetHitGroupType(D3D12_HIT_GROUP_TYPE_PROCEDURAL_PRIMITIVE);
 			}
 		}
