@@ -59,9 +59,9 @@ void DXProceduralProject::BuildGeometryDescsForBottomLevelAS(array<vector<D3D12_
 		// Note: Having separate geometries allows of separate shader record binding per geometry.
 		//		 In this project, this lets us specify custom hit groups per AABB geometry.
 
-		for (auto primType = 0; primType < IntersectionShaderType::TotalPrimitiveCount; primType++) {
-			auto& desc = geometryDescs[BottomLevelASType::AABB][primType];
-			desc.AABBs.AABBs.StartAddress = m_aabbBuffer.resource->GetGPUVirtualAddress() + primType * desc.AABBs.AABBs.StrideInBytes;
+		for (auto i = 0; i  < IntersectionShaderType::TotalPrimitiveCount; i++) {
+			auto& desc = geometryDescs[BottomLevelASType::AABB][i];
+			desc.AABBs.AABBs.StartAddress = m_aabbBuffer.resource->GetGPUVirtualAddress() + i * desc.AABBs.AABBs.StrideInBytes;
 		}
 	}
 }
