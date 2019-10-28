@@ -12,3 +12,10 @@ ________________________________________________________________________________
 <p align="center">
   <img  src="images/frontpage.gif">
 </p>
+
+# Ray Tracing DXR Pipeline
+
+# Performance Analysis
+<p align="center">
+  <img  src="images/FPS vs. Depth.png">
+</p>
