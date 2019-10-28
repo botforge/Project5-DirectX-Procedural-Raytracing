@@ -14,6 +14,9 @@ ________________________________________________________________________________
 </p>
 
 # Ray Tracing DXR Pipeline
+<p align="center">
+  <img  src="images/pipeline.png">
+</p>
 
 # Performance Analysis
 <p align="center">
