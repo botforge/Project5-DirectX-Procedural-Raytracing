@@ -37,7 +37,7 @@ void DXProceduralProject::CreateHitGroupSubobjects(CD3D12_STATE_OBJECT_DESC* ray
 				}
 				hitGroup->SetIntersectionShaderImport(c_intersectionShaderNames[j]);
 				// We tell the hitgroup that it should export into the correct shader hit group name, with the correct type
-				hitGroup->SetHitGroupExport(c_hitGroupNames_AABBGeometry[i][j]);
+				hitGroup->SetHitGroupExport(c_hitGroupNames_AABBGeometry[j][i]);
 				hitGroup->SetHitGroupType(D3D12_HIT_GROUP_TYPE_PROCEDURAL_PRIMITIVE);
 			}
 		}
