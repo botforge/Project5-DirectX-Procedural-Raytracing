@@ -273,7 +273,7 @@ void MyClosestHitShader_Triangle(inout RayPayload rayPayload, in BuiltInTriangle
 [shader("closesthit")]
 void MyClosestHitShader_AABB(inout RayPayload rayPayload, in ProceduralPrimitiveAttributes attr)
 {
-	Ray shadowRay = { HitWorldPosition(), normalize(g_sceneCB.lightPosition.xyz - HitWorldPosition() };
+	Ray shadowRay = { HitWorldPosition(), normalize(g_sceneCB.lightPosition.xyz - HitWorldPosition()) };
 	bool shadowHit = TraceShadowRayAndReportIfHit(shadowRay, rayPayload.recursionDepth);
 
 	//Reflect
