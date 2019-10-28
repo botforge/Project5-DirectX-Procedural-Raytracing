@@ -14,11 +14,14 @@ ________________________________________________________________________________
 </p>
 
 # Ray Tracing DXR Pipeline
+In this project, we use the DXR Ray Tracing pipeline in order to render procedural geometry, ray traced, in real time. Below is the pipeline required for DXR Ray tracing.
 <p align="center">
   <img  src="images/pipeline.png">
 </p>
 
 # Performance Analysis
+Below is a performance analysis compairng ray depth vs FPS
+
 <p align="center">
   <img  src="images/FPS vs. Depth.png">
 </p>
