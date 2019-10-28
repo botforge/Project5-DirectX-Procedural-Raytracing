@@ -165,12 +165,11 @@ bool TraceShadowRayAndReportIfHit(in Ray ray, in UINT currentRayRecursionDepth)
 	rayDesc.TMin = 0;
 	rayDesc.TMax = 10000;
 
-	ShadowRayPayload shadowPayload = { true };
+	ShadowRayPayload shadowPayload = { false };
     TraceRay(g_scene,
         RAY_FLAG_CULL_BACK_FACING_TRIANGLES
         | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
-        | RAY_FLAG_FORCE_OPAQUE             // ~skip any hit shaders
-        | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, // ~skip closest hit shaders,
+        | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, 
         TraceRayParameters::InstanceMask,
         TraceRayParameters::HitGroup::Offset[RayType::Shadow],
         TraceRayParameters::HitGroup::GeometryStride,
@@ -193,8 +192,7 @@ void MyRaygenShader()
 {
 	Ray ray = GenerateCameraRay(DispatchRaysIndex().xy, g_sceneCB.cameraPosition.xyz, g_sceneCB.projectionToWorld);
 
-	UINT depth = 0;
-	float4 color = TraceRadianceRay(ray, depth);
+	float4 color = TraceRadianceRay(ray, 0);
 
 	// Write the color to the render target
 	g_renderTarget[DispatchRaysIndex().xy] = color;
@@ -255,7 +253,7 @@ void MyClosestHitShader_Triangle(inout RayPayload rayPayload, in BuiltInTriangle
 	// Hint 1: look at the intrinsic function RayTCurrent() that returns how "far away" your ray is.
 	// Hint 2: use the built-in function lerp() to linearly interpolate between the computed color and the Background color.
 	//		   When t is big, we want the background color to be more pronounced.
-
+	color = lerp(color, BackgroundColor, exp(-RayTCurrent()));
     rayPayload.color = color;
 }
 
@@ -280,7 +278,14 @@ void MyClosestHitShader_AABB(inout RayPayload rayPayload, in ProceduralPrimitive
 	float4 reflectColor = float4(0, 0, 0, 0);
 	if (l_materialCB.reflectanceCoef > 0.001) {
 		Ray ref = { HitWorldPosition(), reflect(WorldRayDirection(), attr.normal) };
+		float4 color = TraceRadianceRay(ref, rayPayload.recursionDepth);
+		float3 fresnel = FresnelReflectanceSchlick(WorldRayDirection(), attr.normal, l_materialCB.albedo.xyz);
+		reflectColor = l_materialCB.reflectanceCoef * float4(fresnel, 1) * color;
 	}
+	float4 phongColor = CalculatePhongLighting(l_materialCB.albedo, attr.normal, shadowHit, l_materialCB.diffuseCoef, l_materialCB.specularCoef, l_materialCB.specularPower);
+	float4 finalcolor = (phongColor + reflectColor);
+	finalcolor = lerp(finalcolor, BackgroundColor, exp(-RayTCurrent()));
+	rayPayload.color = finalcolor;
 }
 
 //***************************************************************************

@@ -117,7 +117,7 @@ void DXProceduralProject::BuildProceduralGeometryAABBs()
 		{
 			using namespace AnalyticPrimitive;
 			m_aabbs[offset + AABB] = InitializeAABB(XMFLOAT3(0.5f, 0.0f, 0.0f), XMFLOAT3(2.0f, 3.0f, 2.0f));
-			m_aabbs[offset + Spheres] = InitializeAABB(XMFLOAT3(1.0f, 0.75f, -0.5f), XMFLOAT3(3, 3, 3));
+			m_aabbs[offset + Spheres] = InitializeAABB(XMFLOAT3(1.0f, 0.45f, -0.5f), XMFLOAT3(3, 3, 3));
 			offset += AnalyticPrimitive::Count;
 		}
 
