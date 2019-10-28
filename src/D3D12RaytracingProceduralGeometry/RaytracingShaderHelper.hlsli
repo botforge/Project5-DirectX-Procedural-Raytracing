@@ -68,7 +68,9 @@ bool is_a_valid_hit(in Ray ray, in float thit, in float3 hitSurfaceNormal)
 // (3) Call the hlsl built-in function smoothstep() on this interpolant to smooth it out so it doesn't change abruptly.
 float CalculateAnimationInterpolant(in float elapsedTime, in float cycleDuration)
 {
-	return smoothstep(0, 1, 0);
+	float time = fmod(elapsedTime, cycleDuration) / cycleDuration;
+	time = (time <= 0.5f) ? 2 * time : 1 - 2 * (time - 0.5f);
+	return smoothstep(0, 1, time);
 }
 
 // Load three 2-byte indices from a ByteAddressBuffer.
@@ -129,9 +131,17 @@ float3 HitAttribute(float3 vertexAttribute[3], float2 barycentrics)
 // as long as the direction of the ray is correct then the depth does not matter.
 inline Ray GenerateCameraRay(uint2 index, in float3 cameraPosition, in float4x4 projectionToWorld)
 {
+	float2 xy = index + 0.5f;
+	float2 screenPos = xy / DispatchRaysDimensions().xy * 2.0 - 1.0;
+
+	screenPos.y = -screenPos.y;
+
+	float4 world = mul(float4(screenPos, 0, 1), projectionToWorld);
+	world.xyz /= world.w;
+
 	Ray ray;
-    ray.origin = float3(0.0f, 0.0f, 0.0f);
-	ray.direction = normalize(float3(0.0f, 0.0f, 0.0f));
+    ray.origin = cameraPosition;
+	ray.direction = normalize(world.xyz - ray.origin);
 
     return ray;
 }

@@ -1,369 +1,331 @@
-#include "stdafx.h"
-#include "DXProceduralProject.h"
-#include "CompiledShaders\Raytracing.hlsl.h"
+#ifndef RAYTRACING_HLSL
+#define RAYTRACING_HLSL
 
-using namespace std;
-using namespace DX;
+// LOOKAT-1.9.5: Raytracing.hlsl
+// This is where most of the important GPU code lives.
+// The root signatures you will define will be used here.
+// The hitgroups you will define will also be used here.
 
-// LOOKAT-2.6, TODO-2.6: Build geometry descs for the bottom-level AS for the plane and for the procedural geometries in the scene.
-// A bottom-level AS is a unique (or multiple) piece(s) of geometry, each for each type of object in your scene.
-// Example: if you had 2 boxes in your scene, then you would make 1 bottom level AS for 1 box 
-//			and then 2 different instances.
-// In our project, we will have 2 BLAS: 1 for triangles, and 1 for procedurals.
-// You will be building the GeometryDescriptor for a bottom-level AS here. A geometry descriptor describes
-// how the geometry is laid out.
-//	 *	For a triangle mesh, this tells us where the indices are, what's their type,
-//		where the vertices are, etc...
-//	 *	For a procedural geometry, this tells us the count of the AABBs, as well their size.
-//		In this project, we will have 1 AABB geometry per procedural.
-// Lookup the DXR documentation for D3D12_RAYTRACING_GEOMETRY_DESC to see how to fill in these structs
-void DXProceduralProject::BuildGeometryDescsForBottomLevelAS(array<vector<D3D12_RAYTRACING_GEOMETRY_DESC>, BottomLevelASType::Count>& geometryDescs)
+#define HLSL
+#include "RaytracingHlslCompat.h"
+#include "ProceduralPrimitivesLibrary.hlsli"
+#include "RaytracingShaderHelper.hlsli"
+
+//***************************************************************************
+//*****------ Shader resources bound via root signatures -------*************
+//***************************************************************************
+
+// Scene wide resources.
+//  g_* - bound via a global root signature.
+//  l_* - bound via a local root signature.
+RaytracingAccelerationStructure g_scene : register(t0, space0); // accel structure
+RWTexture2D<float4> g_renderTarget : register(u0); // output texture
+ConstantBuffer<SceneConstantBuffer> g_sceneCB : register(b0); // camera projections, lights, time elapsed
+
+// Triangle resources
+ByteAddressBuffer g_indices : register(t1, space0); // triangle indices
+StructuredBuffer<Vertex> g_vertices : register(t2, space0); // triangle positions
+
+// Procedural geometry resources
+StructuredBuffer<PrimitiveInstancePerFrameBuffer> g_AABBPrimitiveAttributes : register(t3, space0); // transforms per procedural
+ConstantBuffer<PrimitiveConstantBuffer> l_materialCB : register(b1); // material data per procedural
+ConstantBuffer<PrimitiveInstanceConstantBuffer> l_aabbCB: register(b2); // other meta-data: type, instance indices
+
+
+//***************************************************************************
+//*********************------ Utilities. -------*****************************
+//***************************************************************************
+
+// TODO-3.6: Diffuse lighting calculation. This is just a Lambert shading term.
+// HINT:	See https://en.wikipedia.org/wiki/Lambertian_reflectance
+// Remember to clamp the dot product term!
+float CalculateDiffuseCoefficient(in float3 incidentLightRay, in float3 normal)
 {
-	D3D12_RAYTRACING_GEOMETRY_FLAGS geometryFlags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
-
-	{
-		// Triangle bottom-level AS contains a single plane geometry.
-		geometryDescs[BottomLevelASType::Triangle].resize(1); // only 1 triangle-type geometry: the plane
-
-		// TODO-2.6: Fill the triangle geometry desc.
-		//  * Remember to use m_indexBuffer and m_vertexBuffer to get pointers to the data.
-		//  * GPUVirtualAddresses can be accessed from a D3D12Resource using GetGPUVirtualAddress() (e.g m_vertexBuffer.resource->GetGPUVirtualAddress())
-		//  * The *total size* of the buffer can be accessed from GetDesc().Width (e.g m_indexBuffer.resource->GetDesc().Width)
-		//  * We filled in the format of the buffers to avoid confusion.
-		auto& geometryDesc = geometryDescs[BottomLevelASType::Triangle][0];
-		geometryDesc = {};
-		geometryDesc.Flags = geometryFlags;
-		geometryDesc.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
-		geometryDesc.Triangles.IndexBuffer = m_indexBuffer.resource->GetGPUVirtualAddress();
-		geometryDesc.Triangles.IndexCount = m_indexBuffer.resource->GetDesc().Width / sizeof(Index);
-		geometryDesc.Triangles.IndexFormat = DXGI_FORMAT_R16_UINT;
-
-		geometryDesc.Triangles.VertexBuffer = { m_vertexBuffer.resource->GetGPUVirtualAddress(), 2 * sizeof(XMFLOAT3) };
-		geometryDesc.Triangles.VertexCount = m_vertexBuffer.resource->GetDesc().Width / sizeof(Vertex);
-        geometryDesc.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
-	}
-
-	{
-		D3D12_RAYTRACING_GEOMETRY_DESC aabbDescTemplate = {};
-		aabbDescTemplate.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS;
-		aabbDescTemplate.AABBs.AABBCount = 1;
-		aabbDescTemplate.AABBs.AABBs.StrideInBytes = sizeof(D3D12_RAYTRACING_AABB);
-		aabbDescTemplate.Flags = geometryFlags;
-
-		// One AABB primitive per procedural geometry.
-		geometryDescs[BottomLevelASType::AABB].resize(IntersectionShaderType::TotalPrimitiveCount, aabbDescTemplate);
-
-		// TODO-2.6: Fill the AABB geometry desc for every procedural geometry.
-		// Look-up what a D3D12_RAYTRACING_GEOMETRY_AABBS_DESC structs needs to be filled in correctly.
-		// Remember to use m_aabbBuffer to get the AABB geometry data you previously filled in.
-		// Note: Having separate geometries allows of separate shader record binding per geometry.
-		//		 In this project, this lets us specify custom hit groups per AABB geometry.
-
-		for (auto primType = 0; primType < IntersectionShaderType::TotalPrimitiveCount; primType++) {
-			auto& desc = geometryDescs[BottomLevelASType::AABB][primType];
-			auto start = m_aabbBuffer.resource->GetGPUVirtualAddress() + primType * desc.AABBs.AABBs.StrideInBytes;
-			desc.AABBs.AABBs.StartAddress = start;
-		}
-	}
+	return 0.0f;
 }
 
-// TODO-2.6: Given the geometry and the geometry descriptors, build the bottom-level acceleration structures.
-AccelerationStructureBuffers DXProceduralProject::BuildBottomLevelAS(const vector<D3D12_RAYTRACING_GEOMETRY_DESC>& geometryDescs, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS buildFlags)
+// TODO-3.6: Phong lighting specular component.
+// The equation should be coefficient = (reflectedRay . reverseRayDirection) ^ (specularPower).
+// HINT:	Consider using built-in DirectX functions to find the reflected ray. Remember that a reflected ray is reflected
+//			with respect to the normal of the hit position.
+// Remember to normalize the reflected ray, and to clamp the dot product term 
+float4 CalculateSpecularCoefficient(in float3 incidentLightRay, in float3 normal, in float specularPower)
 {
-	auto device = m_deviceResources->GetD3DDevice();
-	auto commandList = m_deviceResources->GetCommandList();
-	ComPtr<ID3D12Resource> scratch; // temporary AS data
-	ComPtr<ID3D12Resource> bottomLevelAS; // actual bottom-level AS resource
-
-	// This is what we need to fill in.
-	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC bottomLevelBuildDesc = {};
-
-	// The bottom-level inputs are the geometries you build in BuildGeometryDescsForBottomLevelAS()
-	// Again, these tell the AS where the actual geometry data is and how it is laid out.
-	// TODO-2.6: fill the bottom-level inputs. Consider using D3D12_ELEMENTS_LAYOUT_ARRAY as the DescsLayout.
-	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS &bottomLevelInputs = bottomLevelBuildDesc.Inputs;
-	bottomLevelInputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
-	bottomLevelInputs.Flags = buildFlags;
-	bottomLevelInputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-	bottomLevelInputs.NumDescs = geometryDescs.size();
-	bottomLevelInputs.pGeometryDescs = geometryDescs.data();
-
-	// Query the driver for resource requirements to build an acceleration structure. We've done this for you.
-	D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO bottomLevelPrebuildInfo = {};
-	if (m_raytracingAPI == RaytracingAPI::FallbackLayer)
-	{
-		m_fallbackDevice->GetRaytracingAccelerationStructurePrebuildInfo(&bottomLevelInputs, &bottomLevelPrebuildInfo);
-	}
-	else // DirectX Raytracing
-	{
-		m_dxrDevice->GetRaytracingAccelerationStructurePrebuildInfo(&bottomLevelInputs, &bottomLevelPrebuildInfo);
-	}
-	ThrowIfFalse(bottomLevelPrebuildInfo.ResultDataMaxSizeInBytes > 0);
-
-	// Create a scratch buffer as a UAV. This is like a temporary buffer that the driver needs to build the acceleration structure.
-	AllocateUAVBuffer(device, bottomLevelPrebuildInfo.ScratchDataSizeInBytes, &scratch, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"ScratchResource");
-
-	// Allocate resources for acceleration structures as a UAV --> this will prepare bottomLevelAS for us.
-	// Acceleration structures can only be placed in resources that are created in the default heap (or custom heap equivalent). 
-	// Default heap is OK since the application doesn�t need CPU read/write access to them. 
-	// The resources that will contain acceleration structures must be created in the state D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, 
-	// and must have resource flag D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS. The ALLOW_UNORDERED_ACCESS requirement simply acknowledges both: 
-	//  - the system will be doing this type of access in its implementation of acceleration structure builds behind the scenes.
-	//  - from the app point of view, synchronization of writes/reads to acceleration structures is accomplished using UAV barriers.
-	{
-		D3D12_RESOURCE_STATES initialResourceState;
-		if (m_raytracingAPI == RaytracingAPI::FallbackLayer)
-		{
-			initialResourceState = m_fallbackDevice->GetAccelerationStructureResourceState();
-		}
-		else // DirectX Raytracing
-		{
-			initialResourceState = D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
-		}
-		AllocateUAVBuffer(device, bottomLevelPrebuildInfo.ResultDataMaxSizeInBytes, &bottomLevelAS, initialResourceState, L"BottomLevelAccelerationStructure");
-	}
-
-	// TODO-2.6: Now that you have the scratch and actual bottom-level AS desc, pass their GPU addresses to the bottomLevelBuildDesc.
-	// Consider reading about D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC.
-	// This should be as easy as passing the GPU addresses to the struct using GetGPUVirtualAddress() calls.
-
-
-	// Fill up the command list with a command that tells the GPU how to build the bottom-level AS.
-	if (m_raytracingAPI == RaytracingAPI::FallbackLayer)
-	{
-		// Set the descriptor heaps to be used during acceleration structure build for the Fallback Layer.
-		ID3D12DescriptorHeap *pDescriptorHeaps[] = { m_descriptorHeap.Get() };
-		m_fallbackCommandList->SetDescriptorHeaps(ARRAYSIZE(pDescriptorHeaps), pDescriptorHeaps);
-		m_fallbackCommandList->BuildRaytracingAccelerationStructure(&bottomLevelBuildDesc, 0, nullptr);
-	}
-	else // DirectX Raytracing
-	{
-		m_dxrCommandList->BuildRaytracingAccelerationStructure(&bottomLevelBuildDesc, 0, nullptr);
-	}
-
-	// TODO-2.6: After we finished building the bottom-level AS, save all the info in
-	// the AccelerationStructureBuffers struct so the top-level AS can use it! 
-	// Don't forget that this is the return value.
-	// Consider looking into the AccelerationStructureBuffers struct in DXR-Structs.h
-	return AccelerationStructureBuffers{ scratch, bottomLevelAS, nullptr, bottomLevelPrebuildInfo.ResultDataMaxSizeInBytes};
+	return float4(0.0f, 0.0f, 0.0f, 0.0f);
 }
 
-// TODO-2.6: Build the instance descriptor for each bottom-level AS you built before.
-// An instance descriptor will contain information on how these bottom-level ASes will be instanciated in the scene.
-// Among other things, we will pass the world transformation matrix in the instance descriptor.
-// InstanceDescType will either be D3D12_RAYTRACING_INSTANCE_DESC for real DXR or D3D12_RAYTRACING_FALLBACK_INSTANCE_DESC for fallback layer.
-// BLASPtrType will either be D3D12_GPU_VIRTUAL_ADDRESS for real DXR or WRAPPED_GPU_POINTER for fallback layer.
-template <class InstanceDescType, class BLASPtrType>
-void DXProceduralProject::BuildBottomLevelASInstanceDescs(BLASPtrType *bottomLevelASaddresses, ComPtr<ID3D12Resource>* instanceDescsResource)
+// TODO-3.6: Phong lighting model = ambient + diffuse + specular components.
+// See https://en.wikipedia.org/wiki/Phong_reflection_model for the full simple equation.
+// We have filled in the ambient color for you.
+// HINT 1: remember that you can get the world position of the hitpoint using HitWorldPosition() 
+//		   from RaytracingShaderHelper.hlsli. The light position is somewhere in g_sceneCB.
+// HINT 1: first you need to figure out the diffuse coefficient using CalculateDiffuseCoefficient()
+//		   then you need to figure out the specular coefficient using CalculateSpecularCoefficient()
+//		   then you need to combine the diffuse, specular, and ambient colors into one color.
+// Remember that if the ray is a shadow ray, then the hit position should be very dim. Consider using
+// InShadowRadiance from RaytracingHlslCompat.h tp dim down the diffuse color. The specular color should 
+// be completely black if the ray is a shadow ray.
+float4 CalculatePhongLighting(in float4 albedo, in float3 normal, in bool isInShadow,
+	in float diffuseCoef = 1.0, in float specularCoef = 1.0, in float specularPower = 50)
 {
-	auto device = m_deviceResources->GetD3DDevice();
+	// Ambient component
+	// Fake AO: Darken faces with normal facing downwards/away from the sky a little bit
+	float4 ambientColor = g_sceneCB.lightAmbientColor;
+	float4 ambientColorMin = g_sceneCB.lightAmbientColor - 0.1;
+	float4 ambientColorMax = g_sceneCB.lightAmbientColor;
+	float a = 1 - saturate(dot(normal, float3(0, -1, 0)));
+	ambientColor = albedo * lerp(ambientColorMin, ambientColorMax, a);
 
-	vector<InstanceDescType> instanceDescs;
-	instanceDescs.resize(NUM_BLAS);
-
-	// Bottom-level AS for the plane instance.
-	{
-		// Make the plane a little larger than the actual number of primitives in each dimension.
-		const XMUINT3 NUM_AABB = XMUINT3(700, 1, 700);
-		const XMFLOAT3 fWidth = XMFLOAT3(
-			NUM_AABB.x * c_aabbWidth + (NUM_AABB.x - 1) * c_aabbDistance,
-			NUM_AABB.y * c_aabbWidth + (NUM_AABB.y - 1) * c_aabbDistance,
-			NUM_AABB.z * c_aabbWidth + (NUM_AABB.z - 1) * c_aabbDistance);
-		const XMVECTOR vWidth = XMLoadFloat3(&fWidth);
-
-		auto& instanceDesc = instanceDescs[BottomLevelASType::Triangle];
-		instanceDesc = {};
-		instanceDesc.InstanceMask = 1;
-		instanceDesc.InstanceContributionToHitGroupIndex = 0;
-		instanceDesc.AccelerationStructure = bottomLevelASaddresses[BottomLevelASType::Triangle];
-
-		// Calculate transformation matrix.
-		// We multiply the width by -0.5 in the x,z plane because we want the middle of the plane
-		// (which is currently expanded in the positive x,z plane) to be centered.
-		const XMVECTOR vBasePosition = vWidth * XMLoadFloat3(&XMFLOAT3(-0.5f, 0.0f, -0.5f));
-
-		// Scale in XZ dimensions.
-		XMMATRIX mScale = XMMatrixScaling(fWidth.x, fWidth.y, fWidth.z);
-		XMMATRIX mTranslation = XMMatrixTranslationFromVector(vBasePosition);
-		XMMATRIX mTransform = mScale * mTranslation;
-
-		// Store the transform in the instanceDesc.
-		XMStoreFloat3x4(reinterpret_cast<XMFLOAT3X4*>(instanceDesc.Transform), mTransform);
-	}
-
-	// TODO-2.6: Create instanced bottom-level AS with procedural geometry AABBs.
-	// * Make sure to set InstanceContributionToHitGroupIndex to beyond the shader records for the triangle AABB.
-	//		For triangles, we have 1 shader record for radiance rays, and another for shadow rays.
-	//		Where do you think procedural shader records would start then? Hint: right after.
-	// * Make each instance hover above the ground by ~ half its width
-	{
-
-	}
-
-	// Upload all these instances to the GPU, and make sure the resouce is set to instanceDescsResource.
-	UINT64 bufferSize = static_cast<UINT64>(instanceDescs.size() * sizeof(instanceDescs[0]));
-	AllocateUploadBuffer(device, instanceDescs.data(), bufferSize, &(*instanceDescsResource), L"InstanceDescs");
-};
-
-// TODO-2.6: Build the top-level acceleration structure.
-// The top-level acceleration structure is a set of bottom-level *instances*. It is basically = scene.
-// This should be very similar to BuildBottomLevelAS() except now we have to add in the instances!
-AccelerationStructureBuffers DXProceduralProject::BuildTopLevelAS(AccelerationStructureBuffers bottomLevelAS[BottomLevelASType::Count], D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS buildFlags)
-{
-	auto device = m_deviceResources->GetD3DDevice();
-	auto commandList = m_deviceResources->GetCommandList();
-	ComPtr<ID3D12Resource> scratch;
-	ComPtr<ID3D12Resource> topLevelAS;
-
-	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC topLevelBuildDesc = {};
-
-	// TODO-2.6: fill in the topLevelInputs, read about D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS.
-	// Consider using D3D12_ELEMENTS_LAYOUT_ARRAY as a DescsLayout since we are using an array of bottom-level AS.
-	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS &topLevelInputs = topLevelBuildDesc.Inputs;
-
-
-	D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO topLevelPrebuildInfo = {};
-	if (m_raytracingAPI == RaytracingAPI::FallbackLayer)
-	{
-		m_fallbackDevice->GetRaytracingAccelerationStructurePrebuildInfo(&topLevelInputs, &topLevelPrebuildInfo);
-	}
-	else // DirectX Raytracing
-	{
-		m_dxrDevice->GetRaytracingAccelerationStructurePrebuildInfo(&topLevelInputs, &topLevelPrebuildInfo);
-	}
-	ThrowIfFalse(topLevelPrebuildInfo.ResultDataMaxSizeInBytes > 0);
-
-	// TODO-2.6: Allocate a UAV buffer for the scracth/temporary top-level AS data.
-	
-
-	// Allocate space for the top-level AS.
-	{
-		D3D12_RESOURCE_STATES initialResourceState;
-		if (m_raytracingAPI == RaytracingAPI::FallbackLayer)
-		{
-			initialResourceState = m_fallbackDevice->GetAccelerationStructureResourceState();
-		}
-		else // DirectX Raytracing
-		{
-			initialResourceState = D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
-		}
-
-		// TODO-2.6: Allocate a UAV buffer for the actual top-level AS.
-		
-	}
-
-	// Note on Emulated GPU pointers (AKA Wrapped pointers) requirement in Fallback Layer:
-	// The primary point of divergence between the DXR API and the compute-based Fallback layer is the handling of GPU pointers. 
-	// DXR fundamentally requires that GPUs be able to dynamically read from arbitrary addresses in GPU memory. 
-	// The existing Direct Compute API today is more rigid than DXR and requires apps to explicitly inform the GPU what 
-	// blocks of memory it will access with SRVs/UAVs.
-	// In order to handle the requirements of DXR, the Fallback Layer uses the concept of Emulated GPU pointers, 
-	// which requires apps to create views around all memory they will access for raytracing, 
-	// but retains the DXR-like flexibility of only needing to bind the top level acceleration structure at DispatchRays.
-	//
-	// The Fallback Layer interface uses WRAPPED_GPU_POINTER to encapsulate the underlying pointer
-	// which will either be an emulated GPU pointer for the compute - based path or a GPU_VIRTUAL_ADDRESS for the DXR path.
-
-	// Create instance descs for the bottom-level acceleration structures.
-	// This should be as easy as calling BuildBottomLevelASInstanceDescs you completed above.
-	ComPtr<ID3D12Resource> instanceDescsResource;
-	if (m_raytracingAPI == RaytracingAPI::FallbackLayer)
-	{
-		D3D12_RAYTRACING_FALLBACK_INSTANCE_DESC instanceDescs[BottomLevelASType::Count] = {};
-		WRAPPED_GPU_POINTER bottomLevelASaddresses[BottomLevelASType::Count] =
-		{
-			CreateFallbackWrappedPointer(bottomLevelAS[0].accelerationStructure.Get(), static_cast<UINT>(bottomLevelAS[0].ResultDataMaxSizeInBytes) / sizeof(UINT32)),
-			CreateFallbackWrappedPointer(bottomLevelAS[1].accelerationStructure.Get(), static_cast<UINT>(bottomLevelAS[1].ResultDataMaxSizeInBytes) / sizeof(UINT32))
-		};
-
-		// TODO-2.6: Call the fallback-templated version of BuildBottomLevelASInstanceDescs() you completed above.
-		
-	}
-	else // DirectX Raytracing
-	{
-		D3D12_RAYTRACING_INSTANCE_DESC instanceDescs[BottomLevelASType::Count] = {};
-		D3D12_GPU_VIRTUAL_ADDRESS bottomLevelASaddresses[BottomLevelASType::Count] =
-		{
-			bottomLevelAS[0].accelerationStructure->GetGPUVirtualAddress(),
-			bottomLevelAS[1].accelerationStructure->GetGPUVirtualAddress()
-		};
-
-		// TODO-2.6: Call the DXR-templated version of BuildBottomLevelASInstanceDescs() you completed above.
-		
-	}
-
-	// Create a wrapped pointer to the acceleration structure.
-	if (m_raytracingAPI == RaytracingAPI::FallbackLayer)
-	{
-		UINT numBufferElements = static_cast<UINT>(topLevelPrebuildInfo.ResultDataMaxSizeInBytes) / sizeof(UINT32);
-		m_fallbackTopLevelAccelerationStructurePointer = CreateFallbackWrappedPointer(topLevelAS.Get(), numBufferElements);
-	}
-
-	// TODO-2.6: fill in the topLevelBuildDesc. Read about D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC.
-	// This should be as easy as passing the GPU addresses to the struct using GetGPUVirtualAddress() calls.
-
-
-	// Build acceleration structure.
-	if (m_raytracingAPI == RaytracingAPI::FallbackLayer)
-	{
-		// Set the descriptor heaps to be used during acceleration structure build for the Fallback Layer.
-		ID3D12DescriptorHeap *pDescriptorHeaps[] = { m_descriptorHeap.Get() };
-		m_fallbackCommandList->SetDescriptorHeaps(ARRAYSIZE(pDescriptorHeaps), pDescriptorHeaps);
-		m_fallbackCommandList->BuildRaytracingAccelerationStructure(&topLevelBuildDesc, 0, nullptr);
-	}
-	else // DirectX Raytracing
-	{
-		m_dxrCommandList->BuildRaytracingAccelerationStructure(&topLevelBuildDesc, 0, nullptr);
-	}
-
-	// TODO-2.6: After we finished building the top-level AS, save all the info in the AccelerationStructureBuffers struct.
-	// Very similar to how you did this in BuildBottomLevelAS() except now you have to worry about topLevelASBuffers.instanceDesc.
-	// Consider looking into the AccelerationStructureBuffers struct in DXR-Structs.h.
-	// Make sure to return the topLevelASBuffers before you exit the function.
-	return AccelerationStructureBuffers{};
+	return ambientColor;
 }
 
-// TODO-2.6: This will wrap building the Acceleration Structure! This is what we will call when building our scene.
-void DXProceduralProject::BuildAccelerationStructures()
+//***************************************************************************
+//*****------ TraceRay wrappers for radiance and shadow rays. -------********
+//***************************************************************************
+
+// LOOKAT-1.9.5: Trace a radiance ray into the scene and returns a shaded color.
+// You should read about the TraceRay() function to understand what this does.
+float4 TraceRadianceRay(in Ray ray, in UINT currentRayRecursionDepth)
 {
-	auto device = m_deviceResources->GetD3DDevice();
-	auto commandList = m_deviceResources->GetCommandList();
-	auto commandQueue = m_deviceResources->GetCommandQueue();
-	auto commandAllocator = m_deviceResources->GetCommandAllocator();
+    if (currentRayRecursionDepth >= MAX_RAY_RECURSION_DEPTH)
+    {
+        return float4(0, 0, 0, 0);
+    }
 
-	// Reset the command list for the acceleration structure construction.
-	commandList->Reset(commandAllocator, nullptr);
+    // Set the ray's extents.
+    RayDesc rayDesc;
+    rayDesc.Origin = ray.origin;
+    rayDesc.Direction = ray.direction;
+    // Set TMin to a zero value to avoid aliasing artifacts along contact areas.
+    // Note: make sure to enable face culling so as to avoid surface face fighting.
+    rayDesc.TMin = 0;
+    rayDesc.TMax = 10000;
 
-	// TODO-2.6: Build the geometry descriptors. Hint: you filled in a function that does this.
-	array<vector<D3D12_RAYTRACING_GEOMETRY_DESC>, BottomLevelASType::Count> geometryDescs;
+    RayPayload rayPayload = { float4(0, 0, 0, 0), currentRayRecursionDepth + 1 };
 
+	// TraceRay() is a built-in DXR function. Lookup its documentation to see what it does.
+	// To understand how a ray "finds out" what type of object it hit and therefore call the correct shader hitgroup, it indexes into the shader
+	// table as follows:
+	// hitgroup to choose = ptr to shader table + size of a shader record + (ray contribution + (geometry index * geometry stride) + instance contribution)
+	// * `ray contribution` and `geometry stride` are given here.
+	// * `ptr to shader table` + `size of a shader record` are given in BuildShaderTables() in DXR-ShaderTable.cpp
+	// * `geometry index` is implicitly given when you build your bottom-level AS in BuildGeometryDescsForBottomLevelAS() in DXR-AccelerationStructure.cpp
+	// * `instance contribution` is given in BuildBottomLevelASInstanceDescs() in DXR-AccelerationStructure.cpp
+	// Essentially, when a ray hits a Geometry in a Bottom-Level AS Instance contained within a Top Level AS, it does the following:
+	// (1) Identify which Instance of a BLAS it hit (Triangle or AABB) --> this gives it the `instance contribution`
+	// (2) Identify which Geometry *inside* this Instance it hit
+	//			(If hit Triangle instance, then Triangle geom!, if hit AABB instance, then might be Sphere, Metaball, Fractal, etc..)
+	//			--> this gives it the `geometry index`
+	// (3) Identify what type of Ray it is --> this is given right here, say a Radiance ray
+	// (4) Combines all of these inputs to index into the correct shader into the hitgroup shader table.
+    TraceRay(g_scene,
+        RAY_FLAG_CULL_BACK_FACING_TRIANGLES,
+        TraceRayParameters::InstanceMask,
+        TraceRayParameters::HitGroup::Offset[RayType::Radiance],
+        TraceRayParameters::HitGroup::GeometryStride,
+        TraceRayParameters::MissShader::Offset[RayType::Radiance],
+        rayDesc, rayPayload);
 
-	// TODO-2.6: For each bottom-level object (triangle, procedural), build a bottom-level AS.
-	// Hint: you filled in a function that does this.
-	AccelerationStructureBuffers bottomLevelAS[BottomLevelASType::Count];
-	
-
-	// Batch all resource barriers for bottom-level AS builds.
-	// This will Notifies the driver that it needs to synchronize multiple accesses to resources.
-	D3D12_RESOURCE_BARRIER resourceBarriers[BottomLevelASType::Count];
-	for (UINT i = 0; i < BottomLevelASType::Count; i++)
-	{
-		resourceBarriers[i] = CD3DX12_RESOURCE_BARRIER::UAV(bottomLevelAS[i].accelerationStructure.Get());
-	}
-	commandList->ResourceBarrier(BottomLevelASType::Count, resourceBarriers);
-
-	// TODO-2.6: Build top-level AS. Hint, you already made a function that does this.
-	AccelerationStructureBuffers topLevelAS;
-
-
-	// Kick off acceleration structure construction.
-	m_deviceResources->ExecuteCommandList();
-
-	// Wait for GPU to finish as the locally created temporary GPU resources will get released once we go out of scope.
-	m_deviceResources->WaitForGpu();
-
-	// TODO-2.6: Store the AS buffers. The rest of the buffers will be released once we exit the function.
-	// Do this for both the bottom-level and the top-level AS. Consider re-reading the DXProceduralProject class
-	// to find what member variables should be set.
-	
+    return rayPayload.color;
 }
+
+// TODO-3.2: Trace a shadow ray and return true if it hits any geometry. Very similar to TraceRay() above
+// Hint 1: for the TraceRay() flags, make sure you cull back facing triangles, skip any hit shaders, skip closest hit shaders, 
+//		   and just accept any geometry you hit
+// Hint 2: remember what the ShadowRay payload looks like. See RaytracingHlslCompat.h
+bool TraceShadowRayAndReportIfHit(in Ray ray, in UINT currentRayRecursionDepth)
+{
+	if (currentRayRecursionDepth >= MAX_RAY_RECURSION_DEPTH) {
+		return false;
+	}
+
+	// Set the ray's extents.
+	RayDesc rayDesc;
+	rayDesc.Origin = ray.origin;
+	rayDesc.Direction = ray.direction;
+	rayDesc.TMin = 0;
+	rayDesc.TMax = 10000;
+
+	ShadowRayPayload shadowPayload = { true };
+    TraceRay(g_scene,
+        RAY_FLAG_CULL_BACK_FACING_TRIANGLES
+        | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
+        | RAY_FLAG_FORCE_OPAQUE             // ~skip any hit shaders
+        | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, // ~skip closest hit shaders,
+        TraceRayParameters::InstanceMask,
+        TraceRayParameters::HitGroup::Offset[RayType::Shadow],
+        TraceRayParameters::HitGroup::GeometryStride,
+        TraceRayParameters::MissShader::Offset[RayType::Shadow],
+        rayDesc, shadowPayload);
+
+	return shadowPayload.hit;
+}
+
+//***************************************************************************
+//********************------ Ray gen shader -------**************************
+//***************************************************************************
+
+// TODO-3.1: Complete the ray generation shader.
+// (1) Generate a ray using the function GenerateCameraRay() in RaytracingShaderHelper.hlsli
+// (2) Trace a radiance ray using the generated ray to obtain a color
+// (3) Write that color to the render target
+[shader("raygeneration")]
+void MyRaygenShader()
+{
+	Ray ray = GenerateCameraRay(DispatchRaysIndex().xy, g_sceneCB.cameraPosition.xyz, g_sceneCB.projectionToWorld);
+
+	UINT depth = 0;
+	float4 color = TraceRadianceRay(ray, depth);
+
+	// Write the color to the render target
+	g_renderTarget[DispatchRaysIndex().xy] = color;
+}
+
+//***************************************************************************
+//******************------ Closest hit shaders -------***********************
+//***************************************************************************
+
+// LOOKAT-1.9.5: ClosestHitShader for a triangle.
+// This is invoked after:
+// (1) a call to TraceRay() and
+// (2) the ray hits the closest possible Triangle geometry to it
+[shader("closesthit")]
+void MyClosestHitShader_Triangle(inout RayPayload rayPayload, in BuiltInTriangleIntersectionAttributes attr)
+{
+    // Get the base index of the triangle's first 16 bit index.
+    uint indexSizeInBytes = 2;
+    uint indicesPerTriangle = 3;
+    uint triangleIndexStride = indicesPerTriangle * indexSizeInBytes;
+
+	// PrimitiveIndex() is the triangle index within the mesh. For Procedural primitives, this is the index into the AABB array defining the geometry.
+    uint baseIndex = PrimitiveIndex() * triangleIndexStride;
+
+    // Load up three 16 bit indices for the triangle.
+    const uint3 indices = Load3x16BitIndices(baseIndex, g_indices);
+
+    // Retrieve corresponding vertex normals for the triangle vertices.
+    float3 triangleNormal = g_vertices[indices[0]].normal;
+
+	// This is the intersection point on the triangle.
+	float3 hitPosition = HitWorldPosition();
+
+    // Trace a ray from the hit position towards the single light source we have. If on our way to the light we hit something, then we have a shadow!
+    Ray shadowRay = { hitPosition, normalize(g_sceneCB.lightPosition.xyz - hitPosition) };
+    bool shadowRayHit = TraceShadowRayAndReportIfHit(shadowRay, rayPayload.recursionDepth);
+
+    // Reflected component ray.
+    float4 reflectedColor = float4(0, 0, 0, 0);
+    if (l_materialCB.reflectanceCoef > 0.001 )
+    {
+        // Trace a reflection ray from the intersection points using Snell's law. The reflect() HLSL built-in function does this for you!
+		// See https://docs.microsoft.com/en-us/windows/win32/direct3dhlsl/dx-graphics-hlsl-intrinsic-functions
+        Ray reflectionRay = { hitPosition, reflect(WorldRayDirection(), triangleNormal) };
+        float4 reflectionColor = TraceRadianceRay(reflectionRay, rayPayload.recursionDepth);
+
+        float3 fresnelR = FresnelReflectanceSchlick(WorldRayDirection(), triangleNormal, l_materialCB.albedo.xyz);
+        reflectedColor = l_materialCB.reflectanceCoef * float4(fresnelR, 1) * reflectionColor;
+    }
+
+    // Calculate final color.
+    float4 phongColor = CalculatePhongLighting(l_materialCB.albedo, triangleNormal, shadowRayHit, l_materialCB.diffuseCoef, l_materialCB.specularCoef, l_materialCB.specularPower);
+    float4 color = (phongColor + reflectedColor);
+
+	// TODO: Apply a visibility falloff.
+	// If the ray is very very very far away, tends to sample the background color rather than the color you computed.
+	// This is to mimic some form of distance fog where farther objects appear to blend with the background.
+	// Hint 1: look at the intrinsic function RayTCurrent() that returns how "far away" your ray is.
+	// Hint 2: use the built-in function lerp() to linearly interpolate between the computed color and the Background color.
+	//		   When t is big, we want the background color to be more pronounced.
+
+    rayPayload.color = color;
+}
+
+// TODO: Write the closest hit shader for a procedural geometry.
+// You suppose this is called after the ray successfully iterated over all geometries and determined it intersected with some AABB.
+// The attributes of the AABB are in attr (basically the normal)
+// You need to:
+// (0) Realize that you do not need to load in indices or vertices because we're talking procedural geometry here (wohoo!)
+// (1) Trace a shadow ray to determine if this ray is a shadow ray.
+// (2) Trace a reflectance ray --> compute the reflected color.
+// (3) Use the fact that your ray is a shadow ray or not to compute the Phong lighting.
+// (4) Combine the reflect color and the phong color into one color.
+// (5) Apply visibility falloff to select some interpolation between the computed color or the background color
+// (6) Fill the payload color with whatever final color you computed
+[shader("closesthit")]
+void MyClosestHitShader_AABB(inout RayPayload rayPayload, in ProceduralPrimitiveAttributes attr)
+{
+
+}
+
+//***************************************************************************
+//**********************------ Miss shaders -------**************************
+//***************************************************************************
+
+// TODO-3.3: Complete the Radiance ray miss shader. What color should you output if you hit no geometry?
+// Make sure you edit the rayPayload so your color gets passed down to other shaders.
+// NOTE: whether we missed a Triangle or a Procedural Geometry does not matter. The miss output should be the same!
+[shader("miss")]
+void MyMissShader(inout RayPayload rayPayload)
+{
+
+}
+
+// TODO-3.3: Complete the Shadow ray miss shader. Is this ray a shadow ray if it hit nothing?
+[shader("miss")]
+void MyMissShader_ShadowRay(inout ShadowRayPayload rayPayload)
+{
+
+}
+
+//***************************************************************************
+//*****************------ Intersection shaders-------************************
+//***************************************************************************
+
+// Get ray in AABB's local space.
+Ray GetRayInAABBPrimitiveLocalSpace()
+{
+    PrimitiveInstancePerFrameBuffer attr = g_AABBPrimitiveAttributes[l_aabbCB.instanceIndex];
+
+    // Retrieve a ray origin position and direction in bottom level AS space 
+    // and transform them into the AABB primitive's local space.
+    Ray ray;
+    ray.origin = mul(float4(ObjectRayOrigin(), 1), attr.bottomLevelASToLocalSpace).xyz;
+    ray.direction = mul(ObjectRayDirection(), (float3x3) attr.bottomLevelASToLocalSpace);
+    return ray;
+}
+
+// LOOKAT-3.4.1: Analytic Primitive intersection shader.
+// Analytic primitives are spheres and boxes in this project.
+[shader("intersection")]
+void MyIntersectionShader_AnalyticPrimitive()
+{
+    Ray localRay = GetRayInAABBPrimitiveLocalSpace();
+    AnalyticPrimitive::Enum primitiveType = (AnalyticPrimitive::Enum) l_aabbCB.primitiveType;
+
+	// The point of the intersection shader is to:
+	// (1) find out what is the t at which the ray hits the procedural
+	// (2) pass on some attributes used by the closest hit shader to do some shading (e.g: normal vector)
+    float thit;
+    ProceduralPrimitiveAttributes attr;
+    if (RayAnalyticGeometryIntersectionTest(localRay, primitiveType, thit, attr))
+    {
+        PrimitiveInstancePerFrameBuffer aabbAttribute = g_AABBPrimitiveAttributes[l_aabbCB.instanceIndex];
+
+		// Make sure the normals are stored in BLAS space and not the local space
+        attr.normal = mul(attr.normal, (float3x3) aabbAttribute.localSpaceToBottomLevelAS);
+        attr.normal = normalize(mul((float3x3) ObjectToWorld3x4(), attr.normal));
+
+		// thit is invariant to the space transformation
+        ReportHit(thit, /*hitKind*/ 0, attr);
+    }
+}
+
+// TODO-3.4.2: Volumetric primitive intersection shader. In our case, we only have Metaballs to take care of.
+// The overall structure of this function is parallel to MyIntersectionShader_AnalyticPrimitive() 
+// except you have to call the appropriate intersection test function (see RayVolumetricGeometryIntersectionTest())
+[shader("intersection")]
+void MyIntersectionShader_VolumetricPrimitive()
+{
+
+}
+#endif // RAYTRACING_HLSL

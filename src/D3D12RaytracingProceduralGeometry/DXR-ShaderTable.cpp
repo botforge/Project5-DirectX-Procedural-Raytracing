@@ -116,8 +116,8 @@ void DXProceduralProject::BuildShaderTables()
 
 		// Save the uploaded resource (remember that the uploaded resource is created when we call Allocate() on a GpuUploadBuffer
 		missShaderTable.DebugPrint(shaderIdToStringMap);
-		m_missShaderTable = missShaderTable.GetResource();
 		m_missShaderTableStrideInBytes = missShaderTable.GetShaderRecordSize();
+		m_missShaderTable = missShaderTable.GetResource();
 	}
 
 	// Hit group shader table. This one is slightly different given that a hit group requires its own custom root signature.

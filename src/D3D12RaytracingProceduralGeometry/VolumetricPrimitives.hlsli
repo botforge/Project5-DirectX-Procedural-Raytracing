@@ -22,7 +22,17 @@ struct Metaball
 //		of the distance from the center to the radius.
 float CalculateMetaballPotential(in float3 position, in Metaball blob)
 {
-    return 0.0f;
+	float dist = length(position - blob.center);
+
+	if (dist <= blob.radius) {
+		float d = blob.radius - dist;
+		float r = blob.radius;
+		float result = 6 * (d*d*d*d*d) / (r*r*r*r*r) //d^5, r^5
+			- 15 * (d*d*d*d) / (r*r*r*r) //d^4, r^4
+			+ 10 * (d*d*d) / (r*r*r); //d^3, r^3
+		return result;
+	}
+	return 0;
 }
 
 // LOOKAT-1.9.4: Calculates field potential from all active metaballs. This is just the sum of all potentials.
@@ -83,6 +93,16 @@ void TestMetaballsIntersection(in Ray ray, out float tmin, out float tmax, inout
 {    
 	tmin = INFINITY;
     tmax = -INFINITY;
+	
+	for (UINT i = 0; i < 3; i++) {
+		float thit, next_tmax;
+		if (RaySolidSphereIntersectionTest(ray, thit, next_tmax, blobs[i].center, blobs[i].radius)) {
+			tmin = min(thit, tmin);
+			tmax = max(next_tmax, tmax);
+		}
+	}
+	tmin = max(tmin, RayTMin());
+	tmax = min(tmax, RayTCurrent());
 }
 
 // TODO-3.4.2: Test if a ray with RayFlags and segment <RayTMin(), RayTCurrent()> intersects metaball field.
@@ -100,9 +120,36 @@ void TestMetaballsIntersection(in Ray ray, out float tmin, out float tmax, inout
 //				If this condition fails, keep raymarching!
 bool RayMetaballsIntersectionTest(in Ray ray, out float thit, out ProceduralPrimitiveAttributes attr, in float elapsedTime)
 {
-	thit = 0.0f;
-	attr.normal = float3(0.0f, 0.0f, 0.0f);
-    return false;
+	Metaball blobs[3];
+	InitializeAnimatedMetaballs(blobs, elapsedTime, 12.0f);
+	float t_min, t_max;
+	UINT num_intersections = 3;
+	TestMetaballsIntersection(ray, t_min, t_max, blobs);
+
+	UINT STEPS = 128;
+	float t = t_min;
+	float minStep = (t_max - t_min) / (STEPS / 1);
+	UINT iStep = 0;
+
+	while (iStep < STEPS) {
+		float3 position = ray.origin + t * ray.direction;
+		float sumPotential = 0;
+		for (UINT k = 0; k < num_intersections; k++) {
+			sumPotential += CalculateMetaballPotential(position, blobs[k]);
+		}
+
+		if (sumPotential >= 0.25f) {
+			float3 normal = CalculateMetaballsNormal(position, blobs);
+			if (is_a_valid_hit(ray, t, normal)) {
+				thit = t;
+				attr.normal = normal;
+				return true;
+			}
+		}
+		t += minStep;
+		iStep++;
+	}
+	return false;
 }
 
 #endif // VOLUMETRICPRIMITIVESLIBRARY_H
